@@ -21,7 +21,7 @@ spec:
           env:
             # Mac LAN IP (DHCP): update if it changes. PoC shortcut, see README.
             - name: CAMEL_VAULT_CYBERARK_URL
-              value: https://192.168.15.7:8443
+              value: https://HOST_MAC:8443
             - name: CAMEL_VAULT_CYBERARK_ACCOUNT
               value: myConjurAccount
             - name: CAMEL_VAULT_CYBERARK_USERNAME
