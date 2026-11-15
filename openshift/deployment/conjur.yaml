@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conjur-app
+  namespace: conjur
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: conjur-app
+  template:
+    metadata:
+      labels:
+        app: conjur-app
+    spec:
+      containers:
+        - name: conjur-app
+          image: image-registry.openshift-image-registry.svc:5000/conjur/conjur-app:latest
+          ports:
+            - containerPort: 8080
+          env:
+            # Mac LAN IP (DHCP): update if it changes. PoC shortcut, see README.
+            - name: CAMEL_VAULT_CYBERARK_URL
+              value: https://192.168.15.7:8443
+            - name: CAMEL_VAULT_CYBERARK_ACCOUNT
+              value: myConjurAccount
+            - name: CAMEL_VAULT_CYBERARK_USERNAME
+              value: host/poc/app
+            - name: CAMEL_VAULT_CYBERARK_VERIFY_SSL
+              value: "false"
+            - name: CAMEL_VAULT_CYBERARK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: conjur-credentials
+                  key: CAMEL_VAULT_CYBERARK_API_KEY
+            # Critical when OCP looks for crts
+            # The component ignores verify-ssl, so the JVM trusts the Conjur proxy certificate via truststore.
+            # Hostname verification is skipped because the certificate SAN has no Mac IP (PoC shortcut, see README).
+            - name: JAVA_TOOL_OPTIONS
+              value: >-
+                -Djavax.net.ssl.trustStore=/etc/conjur-tls/conjur-truststore.p12
+                -Djavax.net.ssl.trustStorePassword=changeit
+                -Djavax.net.ssl.trustStoreType=PKCS12
+                -Djdk.internal.httpclient.disableHostnameVerification=true
+          volumeMounts:
+            - name: conjur-truststore
+              mountPath: /etc/conjur-tls
+              readOnly: true
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: conjur-truststore
+          configMap:
+            name: conjur-truststore
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conjur-app
+  namespace: conjur
+spec:
+  selector:
+    app: conjur-app
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: conjur-app
+  namespace: conjur
+spec:
+  to:
+    kind: Service
+    name: conjur-app
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge

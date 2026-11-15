@@ -190,3 +190,4 @@ docker/conjur/tls/
 docker/conjur/admin_data
 docker/conjur/data_key
 docker/conjur/poc_app_data
+openshift/configmap/**
