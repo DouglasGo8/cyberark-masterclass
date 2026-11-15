@@ -602,7 +602,7 @@ curl -sk https://conjur-app-conjur.apps-crc.testing/conjur/api/my-secret/second-
 |Conjur reachable only through a controlled network path (internal endpoint, service mesh or VPN)
 
 |Mac LAN IP in the Deployment (DHCP)
-|Stable DNS name or fixed address
+|A Service without selector plus Endpoints pointing to the external Conjur, giving the Pod a stable in-cluster name (for example `https://conjur-external:8443`). If the IP changes, only the Endpoints resource is updated. The name must also be in the certificate SAN (see the hostname verification row)
 
 |Hostname verification disabled
 |Certificate issued by the corporate CA with the real name in the SAN
