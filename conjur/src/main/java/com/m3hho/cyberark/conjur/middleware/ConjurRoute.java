@@ -1,10 +1,12 @@
 package com.m3hho.cyberark.conjur.middleware;
 
 import com.m3hho.cyberark.conjur.model.Conjur;
+import lombok.NoArgsConstructor;
 import org.apache.camel.builder.RouteBuilder;
 import org.springframework.stereotype.Service;
 
 @Service
+@NoArgsConstructor
 public class ConjurRoute extends RouteBuilder {
   @Override
   public void configure() {
