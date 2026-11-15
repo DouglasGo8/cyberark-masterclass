@@ -27,7 +27,7 @@ camel:
       account: ${CAMEL_VAULT_CYBERARK_ACCOUNT:myConjurAccount}
       username: ${CAMEL_VAULT_CYBERARK_USERNAME:host/poc/app}
       api-key: ${CAMEL_VAULT_CYBERARK_API_KEY:123}
-      verify-ssl: ${CAMEL_VAULT_CYBERARK_VERIFY_SSL:false}
+      verify-ssl: ${CAMEL_VAULT_CYBERARK_VERIFY_SSL:true}
       # enabled in phase 1, once the proxy CA is exported
       # certificate-path: $./docker/conjur/tls/conjur.crt
 
