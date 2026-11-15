@@ -1,0 +1,23 @@
+# Loaded into the root policy.
+# Resulting ids:
+#   host      -> host/poc/app          (the application identity, AppID equivalent)
+#   variables -> poc/app/cipher-key, poc/app/demo-secret, poc/app/second-secret
+#
+# A variable must be declared here before a value can be written to it.
+# To add a secret: add a "- !variable app/<name>" line below and reload the policy.
+
+- !policy
+  id: poc
+  body:
+    - !host app
+
+    - &variables
+      - !variable app/cipher-key
+      - !variable app/demo-secret
+      - !variable app/second-secret
+
+    # read/execute: getSecret | update: createSecret (set a value)
+    - !permit
+      role: !host app
+      privileges: [ read, execute, update ]
+      resources: *variables

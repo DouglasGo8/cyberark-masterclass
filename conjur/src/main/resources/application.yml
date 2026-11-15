@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: cyberark-conjur-app
+  threads:
+    virtual:
+      enabled: true
+  #
+  # datasource:
+  # Local default points to the Postgres container; on OCP the values come from env vars / Secret
+  #  url: ${DB_URL:jdbc:postgresql://localhost:5432/terraform_onreal_db}
+  #  username: ${DB_USERNAME:guest}
+  # No default on purpose: the password must be injected (env var locally, Kubernetes Secret on OCP)
+  #  password: ${DB_PASSWORD:welcome1}
+  #jpa:
+  #  open-in-view: false
+  #  hibernate:
+  # PoC only; Flyway later
+  #    ddl-auto: none
+
+camel:
+  main:
+    name: CyberArkConjurApp
+  component:
+    cyberark-vault:
+      # Same env var contract used by the {{cyberark:...}} property function (see README 6.1)
+      url: ${CAMEL_VAULT_CYBERARK_URL:https://localhost:8443}
+      account: ${CAMEL_VAULT_CYBERARK_ACCOUNT:myConjurAccount}
+      username: ${CAMEL_VAULT_CYBERARK_USERNAME:host/poc/app}
+      api-key: ${CAMEL_VAULT_CYBERARK_API_KEY:123}
+      verify-ssl: true
+      # enabled in phase 1, once the proxy CA is exported
+      # certificate-path: $./docker/conjur/tls/conjur.crt
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: info,health,camelroutes
+  endpoint:
+    health:
+      enabled: true
+    # read-only view of the Camel routes
+    camelroutes:
+      enabled: true
+      read-only: true
+
+logging:
+  level:
+    org.springframework: INFO
+    org.apache.camel.spring.boot: INFO
+    org.apache.camel.impl: ERROR
+    com.m3hho.cyberark.conjur: INFO
