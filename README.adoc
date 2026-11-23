@@ -8,7 +8,7 @@ Douglas Batista
 == 1. Objective
 
 Validate, end to end, how a Spring Boot + Apache Camel application reads and writes secrets in an *external* CyberArk Conjur server using token-based, application-identity authentication.
-The identity model mirrors the AppID / Safe / Object mindset used in the corporate CyberArk estate.
+The identity model mirrors the AppID / Safe / Object mindset used in the reference corp CyberArk estate.
 
 The PoC runs locally first (Maven on the Mac, Conjur in Docker) and is then migrated to OpenShift CRC.
 
@@ -47,7 +47,7 @@ a|
 * Migration to OpenShift CRC with Conjur external
 a|
 * Production hardening (HA, HSM, rotation, Conjur Enterprise/Followers)
-* The corporate PAM/CCP (AIMWebService) API; it is a different API from Conjur's
+* The reference corp PAM/CCP (AIMWebService) API; it is a different API from Conjur's
 * Persisting data in a database (JPA/PostgreSQL were dropped from the PoC)
 * Automated integration tests (`mvn verify`); the flows are verified manually with `curl` and documented with evidence
 * Application resilience (token refresh handling, retries, `onException`); the component behaviour is documented, not hardened
@@ -65,7 +65,7 @@ image::thumbs/main_conjur_arch.png[Initial architecture,align=center]
 |Runs Docker (Conjur) and OCP CRC. Phases 1-2 run the app directly with Maven; phase 3 runs it as a Pod in CRC.
 
 |CyberArk Conjur OSS
-|External secrets server (Docker Compose: Conjur, TLS proxy). Lives *outside* the cluster on purpose, like the corporate Vault.
+|External secrets server (Docker Compose: Conjur, TLS proxy). Lives *outside* the cluster on purpose, like the reference corp Vault.
 
 |OCP CRC
 |Single-node OpenShift. Runs the Spring Boot app Pod.
@@ -89,11 +89,11 @@ The component options `certificatePath` and `verifySsl=false` had no effect in t
 
 == 5. Identity and authentication
 
-=== 5.1 Corporate model vs. Conjur model
+=== 5.1 reference corp model vs. Conjur model
 
 [cols="1,1,2"]
 |===
-|Corporate CyberArk (CCP/AAM) |Conjur (this PoC) |Notes
+|reference corp CyberArk (CCP/AAM) |Conjur (this PoC) |Notes
 
 |AppID
 |Host identity (`host/<app>`)
@@ -112,7 +112,7 @@ The component options `certificatePath` and `verifySsl=false` had no effect in t
 |Required by the Camel component (`account`).
 |===
 
-NOTE: If the corporate environment uses CCP/AAM, this PoC validates the Conjur model and the Camel integration pattern.
+NOTE: If the reference corp environment uses CCP/AAM, this PoC validates the Conjur model and the Camel integration pattern.
 A CCP call would need a different component (for example `camel-http`).
 
 === 5.2 What the Camel component supports (4.22.x docs)
@@ -605,24 +605,24 @@ curl -sk https://conjur-app-conjur.apps-crc.testing/conjur/api/my-secret/second-
 |A Service without selector plus Endpoints pointing to the external Conjur, giving the Pod a stable in-cluster name (for example `https://conjur-external:8443`). If the IP changes, only the Endpoints resource is updated. The name must also be in the certificate SAN (see the hostname verification row)
 
 |Hostname verification disabled
-|Certificate issued by the corporate CA with the real name in the SAN
+|Certificate issued by the reference corp CA with the real name in the SAN
 
 |Host API key in a Kubernetes Secret
 |`authn-jwt` with the Pod service account token, or an external secrets mechanism
 
 |Self-signed certificate and `changeit` truststore password
-|Corporate CA and a managed truststore
+|reference corp CA and a managed truststore
 |===
 
-== 12. Conjur vs the corporate CyberArk estate (Vault, CCP, PVWA)
+== 12. Conjur vs the reference corp CyberArk estate (Vault, CCP, PVWA)
 
 This section explains, in one place, what each piece of the CyberArk family is, where it runs and how an application talks to it.
 The lab in sections 1-11 used Conjur.
-The corporate offers the classic estate: Digital Vault, PVWA, CCP and Credential Provider.
+The reference corp offers the classic estate: Digital Vault, PVWA, CCP and Credential Provider.
 Knowing the difference is what lets the team discuss the design with the CyberArk team instead of only listening.
 
 NOTE: The descriptions below follow CyberArk's public documentation as understood when this was written.
-Endpoint names, response fields and defaults vary by product version, so each item must be confirmed against the corporate's version (see 12.8).
+Endpoint names, response fields and defaults vary by product version, so each item must be confirmed against the reference corp's version (see 12.8).
 
 === 12.1 The pieces and where they run
 
@@ -672,7 +672,7 @@ Endpoint names, response fields and defaults vary by product version, so each it
 Lab (Conjur):
   Pod --HTTPS--> TLS proxy --> Conjur (Linux) --> PostgreSQL
 
-corporate (classic estate):
+reference corp (classic estate):
   Pod --HTTPS--> VIP / load balancer --> IIS (CCP or PVWA) --Vault protocol--> Digital Vault (Safes)
 ----
 
@@ -764,7 +764,7 @@ GET https://<ccp-host>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<Safe>&Obje
 
 PVWA is the path for creating accounts.
 
-.Typical sequence (illustrative; verify the paths on the corporate's version)
+.Typical sequence (illustrative; verify the paths on the reference corp's version)
 [source]
 ----
 # 1. Logon: the body carries the user name and password; the answer is a session token
@@ -781,7 +781,7 @@ POST https://<pvwa-host>/PasswordVault/API/Accounts/<id>/Password/Retrieve
 ----
 
 * The Logon is the same idea as Conjur's authenticate step: a long-lived credential is exchanged for a session token, and only the token is sent afterwards.
-* The session token expires after a configurable idle time. The value is set by the corporate and was not verified.
+* The session token expires after a configurable idle time. The value is set by the reference corp and was not verified.
 * The identity is a user, so the password of that service user is the credential to protect (see 12.6).
 * Jenkins parallel: the Jenkins REST API with an API user, where a request without the right permission returns 403.
 
@@ -792,11 +792,11 @@ The operating system of the server does not change how the application is writte
 It changes where problems appear and who fixes them:
 
 * *TLS and client certificates are configured in IIS.* The server certificate, the trusted CA and whether IIS requires or only accepts a client certificate are IIS settings. A mutual TLS failure is diagnosed there, and by the CyberArk team, not in the Pod.
-* *A VIP or load balancer usually sits in front of IIS.* The URL the Pod uses is the VIP. The corporate's CA must be in the Pod's truststore, as the lab certificate was in the ConfigMap.
+* *A VIP or load balancer usually sits in front of IIS.* The URL the Pod uses is the VIP. The reference corp's CA must be in the Pod's truststore, as the lab certificate was in the ConfigMap.
 * *The source IP the CCP sees is the one after the load balancer and the cluster egress*, which matters for IP allowlists (12.6).
 * *Windows patching and IIS tuning* belong to the CyberArk platform team.
 
-The corporate's choice of a Windows-hosted platform is therefore an operations topic; the security topic is how the application identifies itself (12.6).
+The reference corp's choice of a Windows-hosted platform is therefore an operations topic; the security topic is how the application identifies itself (12.6).
 
 === 12.6 Fit with OpenShift: strengths, weaknesses and mitigations
 
@@ -825,15 +825,15 @@ The corporate's choice of a Windows-hosted platform is therefore an operations t
 |One AppID per application and per environment
 |===
 
-This is the honest comparison with Conjur: the classic estate is the platform the corporate already operates and governs, but its identity model is not native to Kubernetes.
+This is the honest comparison with Conjur: the classic estate is the platform the reference corp already operates and governs, but its identity model is not native to Kubernetes.
 Conjur removes the long-lived credential and identifies the Pod, at the cost of a new platform to run, secure and certify.
-Which one the corporate adopts is the corporate's decision; the project documents both.
+Which one the reference corp adopts is the reference corp's decision; the project documents both.
 
 === 12.7 What the lab proves and what it does not
 
 [cols="1,1"]
 |===
-|Proven in the Conjur lab (carries over to the corporate) |Not proven (only the corporate can show it)
+|Proven in the Conjur lab (carries over to the reference corp) |Not proven (only the reference corp can show it)
 
 a|
 * Credential delivered to the Pod through a Secret, not in the image or in Git
@@ -849,7 +849,7 @@ a|
 * What the Vault audit log records
 |===
 
-Authorization on the real Safes is the part that gives the PoC its value for security, and it cannot be simulated; it needs a test AppID, a test Safe and a disposable Object in the corporate's environment.
+Authorization on the real Safes is the part that gives the PoC its value for security, and it cannot be simulated; it needs a test AppID, a test Safe and a disposable Object in the reference corp's environment.
 
 === 12.8 Questions for the CyberArk team
 
@@ -865,7 +865,7 @@ Authorization on the real Safes is the part that gives the PoC its value for sec
 == 13. Public cloud alternative: AWS Secrets Manager and Parameter Store
 
 A migration to public cloud may come up in discussions about this project.
-This section compares what the corporate has today (the classic CyberArk estate, section 12) and what the PoC used (Conjur) with the two native AWS options, so the team can discuss it with numbers and not only opinions.
+This section compares what the reference corp has today (the classic CyberArk estate, section 12) and what the PoC used (Conjur) with the two native AWS options, so the team can discuss it with numbers and not only opinions.
 
 NOTE: Prices and quotas were checked on AWS and CyberArk public pages in November 2026.
 They change, so confirm them on the AWS pricing and quotas pages before quoting them.
@@ -879,8 +879,8 @@ Latency figures are not given because none was measured; section 13.7 lists what
 |Option |What it is |Where it runs
 
 |CyberArk classic (Vault + CCP + PVWA)
-|The corporate's current platform (section 12). Safes, AppID, CCP for reads, PVWA for writes.
-|corporate data center (Windows, IIS)
+|The reference corp's current platform (section 12). Safes, AppID, CCP for reads, PVWA for writes.
+|reference corp data center (Windows, IIS)
 
 |Conjur (OSS, as in the lab)
 |Secrets server for workloads, policy as code. CyberArk now sells it as *Secrets Manager, Self-Hosted* (formerly Conjur Enterprise) and *Secrets Manager, SaaS* (formerly Conjur Cloud).
@@ -981,7 +981,7 @@ The identity row is the main security argument for the AWS options: the Pod neve
 ** External Secrets Operator: syncs the secret into a Kubernetes Secret on a schedule, so the Pod makes no runtime call to AWS.
 ** Secrets Store CSI Driver: mounts the secret as a file.
 * *Camel.* Camel has AWS Secrets Manager support, including property functions, so a migration changes the component and its configuration, not the route logic. Check that the support exists in the Camel version in use.
-* *Latency.* Not measured. In the same-region case the call is a normal HTTPS request to an AWS endpoint; in the corporate case it goes through the VIP, IIS and the Vault protocol. Measure both (13.7) before comparing.
+* *Latency.* Not measured. In the same-region case the call is a normal HTTPS request to an AWS endpoint; in the reference corp case it goes through the VIP, IIS and the Vault protocol. Measure both (13.7) before comparing.
 
 === 13.5 Migration paths
 
@@ -995,20 +995,20 @@ The identity row is the main security argument for the AWS options: the Pod neve
 
 |B. Move to AWS native
 |Secrets are created and rotated in Secrets Manager or Parameter Store, governed with IAM and CloudTrail.
-|Largest change: the corporate's central Vault is no longer the source of truth for these secrets.
+|Largest change: the reference corp's central Vault is no longer the source of truth for these secrets.
 
 |C. Conjur on the cloud
 |Conjur (self-hosted on EKS, or the SaaS) with `authn-k8s` or `authn-jwt`.
 |The lab pattern applies directly; adds a platform to run unless the SaaS is used.
 |===
 
-Path A is the one that keeps the corporate's CyberArk governance while giving workloads the cloud-native identity model.
-Whether it is available depends on the corporate's CyberArk licence and version.
+Path A is the one that keeps the reference corp's CyberArk governance while giving workloads the cloud-native identity model.
+Whether it is available depends on the reference corp's CyberArk licence and version.
 
 === 13.6 Compliance and governance
 
 Moving secrets to a public cloud is not only a technical decision.
-Data residency, regulatory requirements for a financial institution, key management (who owns the KMS keys) and the audit evidence required by the CISO team must be confirmed with the corporate's compliance and security areas.
+Data residency, regulatory requirements for a financial institution, key management (who owns the KMS keys) and the audit evidence required by the CISO team must be confirmed with the reference corp's compliance and security areas.
 This document does not assume the answers.
 
 === 13.7 What to measure in a PoC
@@ -1022,8 +1022,8 @@ This document does not assume the answers.
 
 === 13.8 Summary
 
-* The AWS options remove the long-lived credential from the Pod and remove the platform operation, at the cost of leaving (or duplicating) the corporate's central Vault.
-* The classic CyberArk estate keeps everything under the corporate's current governance, with the identity limits of section 12.6.
+* The AWS options remove the long-lived credential from the Pod and remove the platform operation, at the cost of leaving (or duplicating) the reference corp's central Vault.
+* The classic CyberArk estate keeps everything under the reference corp's current governance, with the identity limits of section 12.6.
 * Conjur is the middle path: workload identity like AWS, governance like CyberArk, but a platform to operate.
 * The lab already validated the pattern on the Pod side that is common to all of them: credential or identity from the platform, certificate trust, Camel as the only integration layer.
 
