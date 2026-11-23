@@ -613,3 +613,425 @@ curl -sk https://conjur-app-conjur.apps-crc.testing/conjur/api/my-secret/second-
 |Self-signed certificate and `changeit` truststore password
 |Corporate CA and a managed truststore
 |===
+
+== 12. Conjur vs the corporate CyberArk estate (Vault, CCP, PVWA)
+
+This section explains, in one place, what each piece of the CyberArk family is, where it runs and how an application talks to it.
+The lab in sections 1-11 used Conjur.
+The bank offers the classic estate: Digital Vault, PVWA, CCP and Credential Provider.
+Knowing the difference is what lets the team discuss the design with the CyberArk team instead of only listening.
+
+NOTE: The descriptions below follow CyberArk's public documentation as understood when this was written.
+Endpoint names, response fields and defaults vary by product version, so each item must be confirmed against the bank's version (see 12.8).
+
+=== 12.1 The pieces and where they run
+
+[cols="1,3,1,1"]
+|===
+|Component |What it is |Runs on |Used by the app?
+
+|Digital Vault (EPV)
+|The hardened, encrypted store that holds the Safes and the credentials. Applications never talk to it directly; the other components reach it through CyberArk's own Vault protocol, not REST.
+|Windows Server (self-hosted)
+|No (indirectly)
+
+|PVWA (Password Vault Web Access)
+|The web front end of the Vault: the UI for people and the REST API (`/PasswordVault/API/...`) for automation. Used to create, change and retrieve accounts.
+|IIS on Windows
+|Yes, for writes
+
+|CCP (Central Credential Provider, `AIMWebService`)
+|A REST endpoint that returns a credential to an application identified by its AppID. Read-only.
+|IIS on Windows
+|Yes, for reads
+
+|CP (Credential Provider)
+|An agent installed on the host that runs the application. It fetches and caches credentials locally.
+|The application host (Windows or Linux agent)
+|Not viable with ephemeral Pods
+
+|CPM (Central Policy Manager)
+|Background service that rotates and verifies passwords on the target systems.
+|Windows
+|No
+
+|PSM (Privileged Session Manager)
+|Isolates and records privileged sessions for people.
+|Windows
+|No
+
+|Conjur
+|A different product: a secrets server built for containers and DevOps, with policy as code and its own database. Used in the lab.
+|Linux / containers
+|Yes (lab only)
+|===
+
+.Request path in the two worlds
+[source]
+----
+Lab (Conjur):
+  Pod --HTTPS--> TLS proxy --> Conjur (Linux) --> PostgreSQL
+
+Bank (classic estate):
+  Pod --HTTPS--> VIP / load balancer --> IIS (CCP or PVWA) --Vault protocol--> Digital Vault (Safes)
+----
+
+Jenkins parallel: the Digital Vault is the credentials store; a Safe is a folder with its own permissions; PVWA is the REST API and UI of that store; CCP is the "give me this credential" call used by a pipeline.
+
+=== 12.2 Side by side
+
+[cols="1,2,2,2"]
+|===
+| |Conjur (lab) |CCP (read) |PVWA REST API (write and admin)
+
+|Purpose
+|Secrets for workloads, read and write
+|Application reads a credential
+|Create and manage accounts; retrieve for people and tools
+
+|Host
+|Linux / container
+|IIS on Windows
+|IIS on Windows
+
+|Application identity
+|Host (`host/poc/app`)
+|AppID
+|A user (service user), not an application identity
+
+|Authentication
+|Host API key exchanged for a short-lived access token
+|No token. AppID plus client certificate and/or allowed machine or IP
+|Logon with a user and credentials, which returns a session token
+
+|Credential the app holds
+|API key (long-lived), then a token (short-lived)
+|A client certificate (long-lived), or none when only the source IP is checked
+|The service user's password (long-lived)
+
+|Calls to read a secret
+|2 (authenticate, then read)
+|1
+|2 or more (logon, find the account, retrieve the password)
+
+|Authorization model
+|Policy (YAML): `read`, `execute`, `update` on variables
+|Safe membership of the AppID
+|Safe permissions of the user (for example "Add accounts", "Retrieve accounts")
+
+|Write
+|`createSecret`: sets the value of a variable the admin already declared
+|Not supported
+|`POST /Accounts` creates the account; other calls change it
+
+|Audit
+|Conjur audit log
+|Vault audit: which AppID read which account
+|Vault audit: which user did what
+|===
+
+Two differences matter most for this project:
+
+. *Conjur separates admin and application by policy; the classic estate separates them by identity.* In Conjur one host can read and update the variables the policy grants it. With CCP and PVWA, read and write are two different identities (an AppID and a service user), as in the architecture slide.
+. *`createSecret` is not the same operation as `POST /Accounts`.* In Conjur an admin declares the variable first and the app only sets its value. In PVWA the service user creates the whole account (Safe, name, address, secret), so it needs "Add accounts" on the Safe.
+
+=== 12.3 CCP in detail
+
+CCP is the simplest path for an application that only needs to read.
+
+.Request and response (illustrative; fields depend on the version and the account)
+[source]
+----
+GET https://<ccp-host>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<Safe>&Object=<Object>
+
+{
+  "Content": "<the secret>",
+  "UserName": "<account user name>",
+  "Address": "<target address>",
+  "Safe": "<Safe>",
+  "Name": "<Object>",
+  "PolicyID": "<platform policy>"
+}
+----
+
+* One call, no token and no session.
+* The secret is in the `Content` field.
+* The AppID is only a name, not a secret. What proves who is calling is the client certificate (recommended) and/or the allowed machine or IP configured for that AppID.
+* It is read-only: the CCP cannot create or change accounts.
+* In Camel this is a `camel-http` route; the Conjur component does not apply.
+
+=== 12.4 PVWA REST API in detail
+
+PVWA is the path for creating accounts.
+
+.Typical sequence (illustrative; verify the paths on the bank's version)
+[source]
+----
+# 1. Logon: the body carries the user name and password; the answer is a session token
+POST https://<pvwa-host>/PasswordVault/API/auth/<method>/Logon      (method: CyberArk, LDAP, ...)
+
+# 2. Use the token on every call
+Authorization: <session token>
+
+# 3. Create an account in a Safe
+POST https://<pvwa-host>/PasswordVault/API/Accounts
+
+# 4. Retrieve a password (people and tools)
+POST https://<pvwa-host>/PasswordVault/API/Accounts/<id>/Password/Retrieve
+----
+
+* The Logon is the same idea as Conjur's authenticate step: a long-lived credential is exchanged for a session token, and only the token is sent afterwards.
+* The session token expires after a configurable idle time. The value is set by the bank and was not verified.
+* The identity is a user, so the password of that service user is the credential to protect (see 12.6).
+* Jenkins parallel: the Jenkins REST API with an API user, where a request without the right permission returns 403.
+
+=== 12.5 What IIS and Windows mean in practice
+
+For the Pod, a CCP or PVWA call is an ordinary HTTPS request that returns JSON.
+The operating system of the server does not change how the application is written.
+It changes where problems appear and who fixes them:
+
+* *TLS and client certificates are configured in IIS.* The server certificate, the trusted CA and whether IIS requires or only accepts a client certificate are IIS settings. A mutual TLS failure is diagnosed there, and by the CyberArk team, not in the Pod.
+* *A VIP or load balancer usually sits in front of IIS.* The URL the Pod uses is the VIP. The bank's CA must be in the Pod's truststore, as the lab certificate was in the ConfigMap.
+* *The source IP the CCP sees is the one after the load balancer and the cluster egress*, which matters for IP allowlists (12.6).
+* *Windows patching and IIS tuning* belong to the CyberArk platform team.
+
+The bank's choice of a Windows-hosted platform is therefore an operations topic; the security topic is how the application identifies itself (12.6).
+
+=== 12.6 Fit with OpenShift: strengths, weaknesses and mitigations
+
+[cols="1,2,2"]
+|===
+|Topic |Weakness in OCP |Mitigation to discuss
+
+|Identity
+|Certificate and IP are not the identity of a workload. Conjur with `authn-k8s` or `authn-jwt` identifies the Pod itself.
+|One AppID per application, with a dedicated client certificate
+
+|Long-lived credential
+|The client certificate (CCP) and the service user password (PVWA) live in a Secret for a long time
+|Mount them as files, not as environment variables; short certificate validity with rotation; restrict who can read the Secret
+
+|IP allowlist
+|Pods reach the outside with the node IP, which is shared and can change
+|Ask the OCP network team about a fixed egress IP for the namespace; do not rely on IP alone
+
+|Blast radius
+|One identity that can read and write exposes everything it can reach
+|Read AppID with read-only access to its Safe; write user limited to one Safe and used only when registering a secret
+
+|Audit
+|Without a distinct identity per application, the audit log says little
+|One AppID per application and per environment
+|===
+
+This is the honest comparison with Conjur: the classic estate is the platform the bank already operates and governs, but its identity model is not native to Kubernetes.
+Conjur removes the long-lived credential and identifies the Pod, at the cost of a new platform to run, secure and certify.
+Which one the bank adopts is the bank's decision; the project documents both.
+
+=== 12.7 What the lab proves and what it does not
+
+[cols="1,1"]
+|===
+|Proven in the Conjur lab (carries over to the bank) |Not proven (only the bank can show it)
+
+a|
+* Credential delivered to the Pod through a Secret, not in the image or in Git
+* Certificate trust through a ConfigMap and the JVM truststore
+* Camel as the only integration layer
+* The path from the Pod to an external secrets server
+* Separation of admin and developer roles
+a|
+* That the AppID is authorized on the real Safe, and denied elsewhere
+* Mutual TLS or allowlist behaviour against the real CCP
+* The "Add accounts" permission of the PVWA service user
+* Session token lifetime and re-logon
+* What the Vault audit log records
+|===
+
+Authorization on the real Safes is the part that gives the PoC its value for security, and it cannot be simulated; it needs a test AppID, a test Safe and a disposable Object in the bank's environment.
+
+=== 12.8 Questions for the CyberArk team
+
+. What is the CCP URL (the VIP) and which authentication does it require: client certificate, allowed IP, or both?
+. Can an AppID be restricted to a certificate, and who issues the certificate?
+. Can the OCP namespace have a fixed egress IP for an allowlist?
+. Which Safe and Object can be used for a test, and what does the request in ServiceNow need?
+. Which authentication method does the PVWA service user use (CyberArk or LDAP), and what is the session timeout?
+. Which permissions does the service user get on the Safe ("Add accounts", "Update", "Retrieve")?
+. Where should the service user password live: an OpenShift Secret, or served by the CCP itself?
+. What does the Vault audit record for each call, and where do we read it?
+
+== 13. Public cloud alternative: AWS Secrets Manager and Parameter Store
+
+A migration to public cloud may come up in discussions about this project.
+This section compares what the bank has today (the classic CyberArk estate, section 12) and what the PoC used (Conjur) with the two native AWS options, so the team can discuss it with numbers and not only opinions.
+
+NOTE: Prices and quotas were checked on AWS and CyberArk public pages in November 2026.
+They change, so confirm them on the AWS pricing and quotas pages before quoting them.
+CyberArk licence prices are not public and are not compared here.
+Latency figures are not given because none was measured; section 13.7 lists what to measure.
+
+=== 13.1 The options
+
+[cols="1,2,2"]
+|===
+|Option |What it is |Where it runs
+
+|CyberArk classic (Vault + CCP + PVWA)
+|The bank's current platform (section 12). Safes, AppID, CCP for reads, PVWA for writes.
+|Bank data center (Windows, IIS)
+
+|Conjur (OSS, as in the lab)
+|Secrets server for workloads, policy as code. CyberArk now sells it as *Secrets Manager, Self-Hosted* (formerly Conjur Enterprise) and *Secrets Manager, SaaS* (formerly Conjur Cloud).
+|Linux / containers, or CyberArk SaaS
+
+|AWS Secrets Manager
+|Managed service for secrets, with versioning, replication across regions and native rotation.
+|AWS (managed)
+
+|AWS Systems Manager Parameter Store (`SecureString`)
+|Managed key-value store. `SecureString` values are encrypted with AWS KMS. Meant for configuration and simple secrets.
+|AWS (managed)
+|===
+
+Jenkins parallel: Secrets Manager is the Jenkins credentials store with rotation built in; Parameter Store is closer to global environment variables with encryption.
+
+=== 13.2 Side by side
+
+[cols="1,1,1,1,1"]
+|===
+| |CyberArk classic |Conjur |AWS Secrets Manager |Parameter Store `SecureString`
+
+|Application identity
+|AppID with client certificate and/or IP
+|Host; `authn-k8s` or `authn-jwt` identify the Pod
+|IAM role of the workload (on EKS: IRSA or Pod Identity); no static key
+|IAM role of the workload; no static key
+
+|Credential held by the app
+|Certificate or service user password (long-lived)
+|API key (long-lived), or none with `authn-k8s` / `authn-jwt`
+|None; the platform issues temporary credentials
+|None; temporary credentials
+
+|Authorization
+|Safe membership and permissions
+|Policy (YAML)
+|IAM policies, plus an optional resource policy on the secret
+|IAM policies on the parameter path
+
+|Write path
+|PVWA (another identity)
+|Same API, `update` permission
+|Same API, separate IAM permission
+|Same API, separate IAM permission
+
+|Rotation
+|CPM on supported targets
+|Rotators or external tools
+|Native rotation (Lambda-based)
+|None native
+
+|Audit
+|Vault audit
+|Conjur audit log
+|AWS CloudTrail
+|AWS CloudTrail
+
+|Maximum value size
+|Platform dependent
+|Platform dependent
+|64 KB (65,536 bytes)
+|4 KB standard, 8 KB advanced
+
+|Operations by the team
+|Platform team (Windows, IIS, Vault)
+|Run, patch, secure and scale the servers (or buy SaaS)
+|None (managed)
+|None (managed)
+|===
+
+The identity row is the main security argument for the AWS options: the Pod never holds a long-lived credential, which is exactly the weak point listed in section 12.6 for the classic estate.
+
+=== 13.3 Cost model
+
+.AWS Secrets Manager
+* $0.40 per secret per month, plus $0.05 per 10,000 API calls.
+* Replicas in other regions are billed as separate secrets.
+* AWS's own examples: 1,500 secrets with 20 calls per secret per day cost $604.50 per month; 10,000 secrets with 40 calls per secret per day cost $4,060 per month.
+* In these examples the number of stored secrets drives the bill, not the number of reads.
+
+.Parameter Store
+* Standard parameters: no storage charge; 10,000 parameters per region and 4 KB per value.
+* Advanced parameters: $0.05 per parameter per month; up to 100,000 parameters and 8 KB per value; policies and sharing are available.
+* Raising the throughput quota is charged per API interaction, and a call that returns ten parameters counts as ten.
+* `SecureString` has no Parameter Store charge, but KMS charges apply when a customer-managed key is used.
+
+.CyberArk
+* Licensed per product; public prices are not available.
+* Add the cost of operating the platform (servers, patching, high availability, people), which the managed AWS services do not have.
+
+=== 13.4 Performance and real usage
+
+* *Quota.* Secrets Manager supports up to 10,000 `GetSecretValue` requests per second per region (raised in March 2025, at no cost). Parameter Store uses a lower default throughput, which can be raised for a charge; confirm the current numbers on the quotas page.
+* *Real usage is much lower than the quota.* A typical application reads a secret at startup or when it changes. Throttling almost always comes from reading on every request without a cache, not from the quota.
+* *Avoid a call per request.* Three common patterns on Kubernetes:
+** Read at startup and cache in memory with a refresh interval.
+** External Secrets Operator: syncs the secret into a Kubernetes Secret on a schedule, so the Pod makes no runtime call to AWS.
+** Secrets Store CSI Driver: mounts the secret as a file.
+* *Camel.* Camel has AWS Secrets Manager support, including property functions, so a migration changes the component and its configuration, not the route logic. Check that the support exists in the Camel version in use.
+* *Latency.* Not measured. In the same-region case the call is a normal HTTPS request to an AWS endpoint; in the bank case it goes through the VIP, IIS and the Vault protocol. Measure both (13.7) before comparing.
+
+=== 13.5 Migration paths
+
+[cols="1,3,2"]
+|===
+|Path |Description |Effect on this project
+
+|A. Keep CyberArk, sync to AWS
+|CyberArk Secrets Hub copies secrets managed in CyberArk (Privilege Cloud or PAM Self-Hosted) into AWS Secrets Manager, as a read-only copy synced regularly. Security keeps central control; developers read from AWS.
+|Application reads from Secrets Manager with an IAM role; no CCP call at runtime. Requires the Secrets Hub product.
+
+|B. Move to AWS native
+|Secrets are created and rotated in Secrets Manager or Parameter Store, governed with IAM and CloudTrail.
+|Largest change: the bank's central Vault is no longer the source of truth for these secrets.
+
+|C. Conjur on the cloud
+|Conjur (self-hosted on EKS, or the SaaS) with `authn-k8s` or `authn-jwt`.
+|The lab pattern applies directly; adds a platform to run unless the SaaS is used.
+|===
+
+Path A is the one that keeps the bank's CyberArk governance while giving workloads the cloud-native identity model.
+Whether it is available depends on the bank's CyberArk licence and version.
+
+=== 13.6 Compliance and governance
+
+Moving secrets to a public cloud is not only a technical decision.
+Data residency, regulatory requirements for a financial institution, key management (who owns the KMS keys) and the audit evidence required by the CISO team must be confirmed with the bank's compliance and security areas.
+This document does not assume the answers.
+
+=== 13.7 What to measure in a PoC
+
+. Latency of one read, from a Pod: CCP through the VIP, Secrets Manager and Parameter Store in the same region (median and p95, cold and warm).
+. Behaviour under load with and without cache, to find where throttling starts.
+. Time to rotate a secret and to make the application pick up the new value.
+. Operational effort: who patches, who is on call, what breaks when a certificate expires.
+. Audit: can the CISO team answer "who read this secret and when" from the logs of each option?
+. Monthly cost with the real number of secrets and reads (13.3).
+
+=== 13.8 Summary
+
+* The AWS options remove the long-lived credential from the Pod and remove the platform operation, at the cost of leaving (or duplicating) the bank's central Vault.
+* The classic CyberArk estate keeps everything under the bank's current governance, with the identity limits of section 12.6.
+* Conjur is the middle path: workload identity like AWS, governance like CyberArk, but a platform to operate.
+* The lab already validated the pattern on the Pod side that is common to all of them: credential or identity from the platform, certificate trust, Camel as the only integration layer.
+
+.Sources (checked November 2026)
+* AWS Secrets Manager pricing: https://aws.amazon.com/secrets-manager/pricing/
+* AWS Secrets Manager request rate increase (March 2025): https://aws.amazon.com/about-aws/whats-new/2025/03/aws-secrets-manager-increases-api-requests-seconds
+* AWS Secrets Manager quotas: https://docs.aws.amazon.com/secretsmanager/latest/userguide/reference_limits.html
+* Parameter Store tiers: https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-advanced-parameters.html
+* Parameter Store throughput: https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-throughput.html
+* CyberArk Secrets Hub and AWS Secrets Manager: https://aws.amazon.com/blogs/apn/streamlining-secrets-management-for-enhanced-security-using-cyberark-secrets-hub-and-aws
+* CyberArk product names (Secrets Manager, SaaS and Self-Hosted): https://www.cyberark.com/resources/product-insights-blog/secrets-managed-smarter-and-faster-with-cyberark-s-automation-updates

@@ -6,22 +6,16 @@
 
   <parent>
     <artifactId>cyberark-masterclass</artifactId>
-    <groupId>com.m3hho.cyberark.vault</groupId>
+    <groupId>com.m3hho.cyberark</groupId>
     <version>1.0-SNAPSHOT</version>
   </parent>
-
-
-  <properties>
-    <native-maven-plugin.version>1.1.18</native-maven-plugin.version>
-  </properties>
 
 
   <groupId>com.m3hho.cyberark.conjour</groupId>
   <artifactId>conjur</artifactId>
   <packaging>jar</packaging>
-  <version>1.0-SNAPSHOT</version>
 
-  <name>Camel CyberArk Conjur Integration</name>
+  <name>CyberArk Conjur :: Apache Camel Integration</name>
 
   <dependencies>
 
